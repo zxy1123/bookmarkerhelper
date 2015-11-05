@@ -6,7 +6,6 @@ package com.zxy.pdf.handler;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Stack;
 import java.util.regex.Pattern;
@@ -100,7 +99,7 @@ public class GeneralHandler implements Handler {
         List<Marker> markers = new ArrayList<>();
         int numberOfPages = reader.getNumberOfPages();
         BookmarkersExtractionStrategy bookmarkersExtractionStrategy = new BookmarkersExtractionStrategy();
-        for (int i = 1; i < numberOfPages; i++) {
+        for (int i = 2; i < numberOfPages; i++) {
             Rectangle pageSize = reader.getPageSize(i);
             bookmarkersExtractionStrategy.setPageSize(pageSize);
             PageInfo pageInfo = new PageInfo(i);
@@ -123,6 +122,8 @@ public class GeneralHandler implements Handler {
         }
         Float lineLeft = pageInfo.getLineLeft().getMax();
         Float lineRight = pageInfo.getLineRight().getMax();
+        pageInfo.setPageLeft(lineLeft);
+        pageInfo.setPageRight(lineRight);
         List<TextInfo> textInfos = pageInfo.getTextInfos();
         fundTitle(pageInfo, textInfos, lineLeft, lineRight, markers);
     }
@@ -136,50 +137,148 @@ public class GeneralHandler implements Handler {
             return;
         }
         int down = mem.get(0).getDown();
-        LinkedList<Pair> pairs = new LinkedList<>();
+        List<Line> lines = new ArrayList<>();
         int start = 0;
         for (int i = 1; i < mem.size(); i++) {
             TextInfo next = mem.get(i);
             if (next.getTop() < down) {
-                pairs.add(new Pair(start, i - 1));
+                lines.add(new Line(start, i - 1));
                 start = i;
             }
+            down = mem.get(i).getDown();
         }
-        for (int j = 0; j < pairs.size(); j++) {
-            if (mem.get(pairs.get(j).y).getRight() < pageRight - 100) {
-                if (j > 2 && j < pairs.size() - 2) {
-                    int beforeBeforeDown = mem.get(pairs.get(j - 2).y).getDown();
-                    int beforeTop = mem.get(pairs.get(j - 1).y).getTop();
-                    int beforeDown = mem.get(pairs.get(j - 1).y).getDown();
-                    int currentTop = mem.get(pairs.get(j).y).getTop();
-                    if (Math.abs(beforeBeforeDown - beforeTop) < Math.abs(beforeDown - currentTop) + 4) {
-                        return;
-                    }
+        if (lines.size() < 5) {
+            return;
+        }
+        for (int j = 0; j < lines.size(); j++) {
+            TextInfo target = getLineTextInfo(mem, lines, j);
+            if (!isInPage(pageInfo, mem, lines, j)) {
+                continue;
+            }
+
+            if (isOutPage(pageInfo, mem, lines, j)) {
+                continue;
+            }
+            if (j < 2) {
+                TextInfo next = null;
+                TextInfo nextPlus = null;
+                TextInfo before = null;
+                if (isInPage(pageInfo, mem, lines, j + 1)) {
+                    next = getLineTextInfo(mem, lines, j + 1);
                 }
-                if (j == 0) {
-                    if (mem.get(pairs.get(j + 1).y).getRight() > pageRight - 80) {
-                        addMarker(pageInfo, markers, pairs, mem, j);
-                    }
-                } else if (j < pairs.size() - 1) {
-                    if ((mem.get(pairs.get(j + 1).y).getRight() > pageRight - 80)
-                        && (mem.get(pairs.get(j - 1).y).getRight() > pageRight - 80)) {
-                        addMarker(pageInfo, markers, pairs, mem, j);
-                    }
+                if (isInPage(pageInfo, mem, lines, j + 2)) {
+                    nextPlus = getLineTextInfo(mem, lines, j + 2);
+                }
+                if (isInPage(pageInfo, mem, lines, j - 1)) {
+                    before = getLineTextInfo(mem, lines, j - 1);
+                }
+                if (isDiffSpaceWithNext(target, next, nextPlus) && isBiggerSizeThanNextAndBefore(target, next, before)) {
+                    addMarker(pageInfo, markers, lines, mem, j);
+                }
+            } else if (1 < j && j < lines.size() - 2) {
+                TextInfo next = null;
+                TextInfo nextPlus = null;
+                TextInfo before = null;
+                TextInfo beforePlus = null;
+                if (isInPage(pageInfo, mem, lines, j + 1)) {
+                    next = getLineTextInfo(mem, lines, j + 1);
+                }
+                if (isInPage(pageInfo, mem, lines, j + 2)) {
+                    nextPlus = getLineTextInfo(mem, lines, j + 2);
+                }
+
+                if (isInPage(pageInfo, mem, lines, j - 1)) {
+                    before = getLineTextInfo(mem, lines, j - 1);
+                }
+                if (isInPage(pageInfo, mem, lines, j - 2)) {
+                    beforePlus = getLineTextInfo(mem, lines, j - 2);
+                }
+                boolean checkBeforeSpace = isDiffSpaceWithBefore(target, before, beforePlus);
+                if (isDiffSpaceWithNext(target, next, nextPlus) && checkBeforeSpace) {
+                    addMarker(pageInfo, markers, lines, mem, j);
+                }
+            } else if (j < lines.size() - 1) {
+                TextInfo next = getLineTextInfo(mem, lines, j + 1);
+                TextInfo before = getLineTextInfo(mem, lines, j - 1);
+                if (isBiggerSizeThanNextAndBefore(target, next, before)) {
+                    addMarker(pageInfo, markers, lines, mem, j);
                 }
             }
+
         }
     }
 
     /**
      * 
-     * @param markers
-     * @param pairs
+     * @param target
+     * @param before
+     * @param beforePlus
+     * @return
+     */
+    private boolean isDiffSpaceWithBefore(TextInfo target, TextInfo before, TextInfo beforePlus) {
+        if (before == null) {
+            return true;
+        }
+        if (beforePlus == null) {
+            return false;
+        }
+        return before.getDown() - target.getTop() > beforePlus.getDown() - before.getTop() + 1;
+    }
+
+    /**
+     * 
+     * @param target
+     * @param next
+     * @param nextPlus
+     * @return
+     */
+    private boolean isDiffSpaceWithNext(TextInfo target, TextInfo next, TextInfo nextPlus) {
+        if (next == null) {
+            return true;
+        }
+        if (nextPlus == null) {
+            return false;
+        }
+        return target.getDown() - next.getTop() > next.getDown() - nextPlus.getTop() + 1;
+    }
+
+    /**
+     * 
+     * @param target
+     * @param next
+     * @return
+     */
+    private boolean isBiggerSizeThanNextAndBefore(TextInfo target, TextInfo next, TextInfo before) {
+        boolean begigNext = next == null ? true : target.getTop() - target.getDown() > next.getTop() - next.getDown()
+                                                                                       + 4;
+        boolean begigfore = before == null ? true : target.getTop() - target.getDown() > before.getTop()
+                                                                                         - before.getDown() + 4;
+        return begigNext && begigfore;
+    }
+
+    /**
+     * 
+     * @param mem
+     * @param lines
      * @param j
      */
-    private void addMarker(PageInfo pageInfo, List<Marker> markers, LinkedList<Pair> pairs, List<TextInfo> mem, int j) {
-        Pair pair = pairs.get(j);
+    private TextInfo getLineTextInfo(List<TextInfo> mem, List<Line> lines, int j) {
+        if (j >= lines.size() || j < 0) {
+            return null;
+        }
+        return mem.get(lines.get(j).y);
+    }
+
+    /**
+     * 
+     * @param markers
+     * @param lines
+     * @param j
+     */
+    private void addMarker(PageInfo pageInfo, List<Marker> markers, List<Line> lines, List<TextInfo> mem, int j) {
+        Line line = lines.get(j);
         StringBuilder sb = new StringBuilder();
-        for (int i = pair.x; i <= pair.y; i++) {
+        for (int i = line.x; i <= line.y; i++) {
             sb.append(mem.get(i).getRenderInfo().getText());
         }
         String b = sb.toString();
@@ -194,11 +293,46 @@ public class GeneralHandler implements Handler {
         markers.add(e);
     }
 
-    private static class Pair {
+    /**
+     * 
+     * @param pageInfo
+     * @param mem
+     * @param line
+     * @return
+     */
+    private boolean isOutPage(PageInfo pageInfo, List<TextInfo> mem, List lines, int j) {
+        Line line = null;
+        if (j < 0 || j >= lines.size()) {
+            return true;
+        }
+        line = (Line) lines.get(j);
+        return (mem.get(line.y).getRight() > pageInfo.getPageRight())
+               && mem.get(line.x).getLeft() < pageInfo.getPageLeft();
+    }
+
+    /**
+     * 
+     * @param pageInfo
+     * @param mem
+     * @param line
+     * @return
+     */
+    private boolean isInPage(PageInfo pageInfo, List<TextInfo> mem, List lines, int j) {
+        Line line = null;
+        if (j < 0 || j >= lines.size()) {
+            return false;
+        }
+        line = (Line) lines.get(j);
+        boolean outPage = (mem.get(line.y).getRight() < pageInfo.getPageLeft())
+                          || mem.get(line.x).getLeft() > pageInfo.getPageRight();
+        return !outPage;
+    }
+
+    private static class Line {
         int x;
         int y;
 
-        public Pair(int x, int y) {
+        public Line(int x, int y) {
             this.x = x;
             this.y = y;
         }
